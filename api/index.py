@@ -1,19 +1,17 @@
 """
 星轨人格 MBTI 后端 · Vercel 版
-数据存在 GitHub 仓库中，不会丢失
+数据持久化在 jsonblob.com（免费，无需密钥）
 """
-
-import json, os, uuid, hashlib, time
+import json, uuid, hashlib, time, traceback
 from datetime import datetime, timedelta, timezone
 from collections import Counter
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-import urllib.request, urllib.error, base64
+import urllib.request, urllib.error
 
-TOKEN = os.environ.get("GH_TOKEN", "")
-REPO = "6624-lab/MBTI-Steller-backend"
-DATA_PATH = "results.json"
+BLOB_ID = "019e4622-d94b-7b39-975b-f4a95c026a5d"
+BLOB_URL = f"https://jsonblob.com/api/jsonBlob/{BLOB_ID}"
 
 TYPE_DATA = {
     "INTJ": "星域建筑师", "INTP": "星际逻辑师", "ENTJ": "星系统帅", "ENTP": "星际辩手",
@@ -57,8 +55,8 @@ def _save(data):
     _cache["data"] = data
     _cache["ts"] = time.time()
 
-INDEX_HTML = """
-<!DOCTYPE html>
+# ═══ INDEX_HTML ═══
+INDEX_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -870,6 +868,9 @@ INDEX_HTML = """
     startQuiz();
   }
 
+  // Track page visit
+  fetch('/api/pageview', { method: 'POST' }).catch(function(){});
+
   // ═══ Handle URL type param (share result view) ═══
   (function handleSharedResult() {
     const params = new URLSearchParams(window.location.search);
@@ -891,11 +892,10 @@ INDEX_HTML = """
 </script>
 </body>
 </html>
-
 """
 
-DASHBOARD_HTML = """
-<!DOCTYPE html>
+# ═══ DASHBOARD_HTML ═══
+DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -1069,26 +1069,32 @@ fetch('/api/stats')
   });
 </script>
 </body>
-</html>
-"""
+</html>"""
 
 @app.get("/", response_class=HTMLResponse)
-async def index(): return INDEX_HTML
+async def index_page():
+    return INDEX_HTML
 
 @app.get("/health")
-async def health(): return {"status": "ok"}
+async def health():
+    return {"status": "ok"}
 
 @app.post("/api/submit")
 async def submit(request: Request):
-    try: body = await request.json()
-    except: raise HTTPException(400, "Invalid JSON")
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
     t = body.get("type", "").upper()
-    if t not in TYPE_DATA: raise HTTPException(400, f"Invalid type: {t}")
+    if t not in TYPE_DATA:
+        raise HTTPException(400, f"Invalid type: {t}")
     ip = hashlib.md5((request.client.host or "").encode()).hexdigest()[:8]
-    rec = {"id": uuid.uuid4().hex[:12], "type": t, "name": body.get("name",""),
-           "scores": body.get("scores",{}), "ip": ip,
-           "ua": request.headers.get("user-agent",""),
-           "ts": datetime.now(timezone.utc).isoformat()}
+    rec = {
+        "id": uuid.uuid4().hex[:12], "type": t, "name": body.get("name", ""),
+        "scores": body.get("scores", {}), "ip": ip,
+        "ua": request.headers.get("user-agent", ""),
+        "ts": datetime.now(timezone.utc).isoformat()
+    }
     data = _load()
     data.setdefault("results", []).append(rec)
     _save(data)
@@ -1104,45 +1110,58 @@ async def pageview(request: Request):
 
 @app.get("/api/stats")
 async def stats():
-    data = _load()
-    results = data.get("results", [])
-    pvs = data.get("pageviews", [])
-    total = len(results)
-    type_dist = []
-    if total > 0:
-        for t, cnt in Counter(r["type"] for r in results).most_common():
-            type_dist.append({"type": t, "name": TYPE_DATA.get(t,""), "count": cnt, "pct": round(cnt/total*100,1)})
-    today = datetime.now(timezone.utc).date().isoformat()
-    daily = []
-    for i in range(6, -1, -1):
-        d = (datetime.now(timezone.utc).date() - timedelta(days=i)).isoformat()
-        cnt = sum(1 for r in results if r.get("ts","").startswith(d))
-        daily.append({"date": d, "count": cnt})
-    dims = {"E":0,"I":0,"S":0,"N":0,"T":0,"F":0,"J":0,"P":0}
-    for r in results:
-        t = r.get("type","")
-        if len(t)==4:
-            for c in t: dims[c] = dims.get(c,0)+1
-    recent = sorted(results, key=lambda x: x.get("ts",""), reverse=True)[:20]
-    return {"total": total, "pageviews": len(pvs),
-            "pageview_today": sum(1 for p in pvs if p.get("t","").startswith(today)),
+    try:
+        data = _load()
+        results = [r for r in data.get("results", []) if r.get("type") in TYPE_DATA]
+        pvs = data.get("pageviews", [])
+        total = len(results)
+
+        type_dist = []
+        if total > 0:
+            for t, cnt in Counter(r["type"] for r in results).most_common():
+                type_dist.append({"type": t, "name": TYPE_DATA.get(t, ""), "count": cnt, "pct": round(cnt/total*100, 1)})
+
+        today = datetime.now(timezone.utc).date().isoformat()
+        daily = []
+        for i in range(6, -1, -1):
+            d = (datetime.now(timezone.utc).date() - timedelta(days=i)).isoformat()
+            cnt = sum(1 for r in results if r.get("ts", "").startswith(d))
+            daily.append({"date": d, "count": cnt})
+
+        dims = {"E": 0, "I": 0, "S": 0, "N": 0, "T": 0, "F": 0, "J": 0, "P": 0}
+        for r in results:
+            t = r.get("type", "")
+            if len(t) == 4:
+                for c in t:
+                    dims[c] = dims.get(c, 0) + 1
+
+        recent = sorted(results, key=lambda x: x.get("ts", ""), reverse=True)[:20]
+
+        return {
+            "total": total, "pageviews": len(pvs),
+            "pageview_today": sum(1 for p in pvs if p.get("t", "").startswith(today)),
             "type_distribution": type_dist, "daily_trend": daily,
             "dimensions": dims,
-            "recent": [{"type":r["type"],"name":r.get("name",""),"created_at":r.get("ts","")} for r in recent]}
+            "recent": [{"type": r["type"], "name": r.get("name", ""), "created_at": r.get("ts", "")} for r in recent]
+        }
+    except Exception as e:
+        return {"error": str(e), "traceback": traceback.format_exc()}
 
 @app.get("/api/debug")
 async def debug():
-    import traceback, urllib.request, json
     try:
-        req = urllib.request.Request("https://jsonblob.com/api/jsonBlob/019e4622-d94b-7b39-975b-f4a95c026a5d")
+        req = urllib.request.Request(BLOB_URL)
         with urllib.request.urlopen(req, timeout=10) as r:
             data = json.loads(r.read())
-            return {"jsonblob_ok": True, "data": data}
+            return {"blob_ok": True, "data": data}
     except Exception as e:
-        return {"jsonblob_ok": False, "error": str(e), "traceback": traceback.format_exc()}
+        return {"blob_ok": False, "error": str(e), "traceback": traceback.format_exc()}
 
 @app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(): return DASHBOARD_HTML
+async def dashboard():
+    return DASHBOARD_HTML
 
 @app.post("/api/clear")
-async def clear(): _save({"results":[],"pageviews":[]}); return {"ok": True}
+async def clear():
+    _save({"results": [], "pageviews": []})
+    return {"ok": True}
