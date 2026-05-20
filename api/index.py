@@ -25,53 +25,37 @@ TYPE_DATA = {
 app = FastAPI(title="星轨人格后台")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-_cache = {"data": None, "ts": 0, "sha": None}
-
-def _headers():
-    return {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json", "User-Agent": "mbti"}
+_cache = {"data": None, "ts": 0}
 
 def _load():
     now = time.time()
     if _cache["data"] is not None and (now - _cache["ts"]) < 30:
-        return _cache["data"], _cache["sha"]
-    url = f"https://api.github.com/repos/{REPO}/contents/{DATA_PATH}"
-    req = urllib.request.Request(url, headers=_headers())
+        return _cache["data"]
+    req = urllib.request.Request(BLOB_URL, headers={"User-Agent": "mbti-backend"})
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            body = json.loads(resp.read())
-            raw = base64.b64decode(body["content"]).decode()
-            data = json.loads(raw)
+            data = json.loads(resp.read())
             if isinstance(data, list):
                 data = {"results": data, "pageviews": []}
             _cache["data"] = data
-            _cache["sha"] = body["sha"]
             _cache["ts"] = now
-            return data, body["sha"]
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            empty = {"results": [], "pageviews": []}
-            _cache["data"] = empty
-            return empty, None
-        raise
+            return data
+    except Exception:
+        empty = {"results": [], "pageviews": []}
+        _cache["data"] = empty
+        return empty
 
-def _save(data, sha):
-    raw = json.dumps(data, ensure_ascii=False)
-    b64 = base64.b64encode(raw.encode()).decode()
-    n = len(data.get("results", []))
-    payload = json.dumps({"message": f"save {n} results", "content": b64, "sha": sha, "branch": "main"}).encode()
-    url = f"https://api.github.com/repos/{REPO}/contents/{DATA_PATH}"
-    req = urllib.request.Request(url, data=payload, headers={**_headers(), "Content-Type": "application/json"}, method="PUT")
+def _save(data):
+    raw = json.dumps(data, ensure_ascii=False).encode()
+    req = urllib.request.Request(BLOB_URL, data=raw,
+        headers={"User-Agent": "mbti-backend", "Content-Type": "application/json"},
+        method="PUT")
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            sha = json.loads(resp.read())["content"]["sha"]
-        _cache["data"] = data
-        _cache["sha"] = sha
-        _cache["ts"] = time.time()
+        urllib.request.urlopen(req, timeout=15)
     except Exception as e:
         print(f"Save error: {e}")
-        _cache["data"] = data
-        _cache["ts"] = time.time()
-    return sha
+    _cache["data"] = data
+    _cache["ts"] = time.time()
 
 INDEX_HTML = """
 <!DOCTYPE html>
@@ -1105,22 +1089,22 @@ async def submit(request: Request):
            "scores": body.get("scores",{}), "ip": ip,
            "ua": request.headers.get("user-agent",""),
            "ts": datetime.now(timezone.utc).isoformat()}
-    data, sha = _load()
+    data = _load()
     data.setdefault("results", []).append(rec)
-    _save(data, sha)
+    _save(data)
     return {"id": rec["id"], "type": t}
 
 @app.post("/api/pageview")
 async def pageview(request: Request):
-    data, sha = _load()
+    data = _load()
     ip = hashlib.md5((request.client.host or "").encode()).hexdigest()[:8]
     data.setdefault("pageviews", []).append({"t": datetime.now(timezone.utc).isoformat(), "ip": ip})
-    _save(data, sha)
+    _save(data)
     return {"ok": True}
 
 @app.get("/api/stats")
 async def stats():
-    data, _ = _load()
+    data = _load()
     results = data.get("results", [])
     pvs = data.get("pageviews", [])
     total = len(results)
@@ -1150,4 +1134,4 @@ async def stats():
 async def dashboard(): return DASHBOARD_HTML
 
 @app.post("/api/clear")
-async def clear(): _save({"results":[],"pageviews":[]}, _cache.get("sha")); return {"ok": True}
+async def clear(): _save({"results":[],"pageviews":[]}); return {"ok": True}
