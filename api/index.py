@@ -1130,6 +1130,17 @@ async def stats():
             "dimensions": dims,
             "recent": [{"type":r["type"],"name":r.get("name",""),"created_at":r.get("ts","")} for r in recent]}
 
+@app.get("/api/debug")
+async def debug():
+    import traceback, urllib.request, json
+    try:
+        req = urllib.request.Request("https://jsonblob.com/api/jsonBlob/019e4622-d94b-7b39-975b-f4a95c026a5d")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+            return {"jsonblob_ok": True, "data": data}
+    except Exception as e:
+        return {"jsonblob_ok": False, "error": str(e), "traceback": traceback.format_exc()}
+
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(): return DASHBOARD_HTML
 
